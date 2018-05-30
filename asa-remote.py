@@ -10,16 +10,24 @@ import re
 PROG = os.path.basename(sys.argv[0]).rstrip('.py')
 PROG_DESC = 'Cisco ASA shell client'
 
+enable_output = False
+
 def _out(str_text):
-    sys.stdout.write(str_text)
-    sys.stdout.flush()
+    if enable_output:
+        sys.stdout.write(str_text)
+        sys.stdout.flush()
+
+def _err(str_text):
+    sys.stderr.write(str_text)
+    sys.stderr.flush()
 
 class ASAClient(object):
 
     client = paramiko.SSHClient()
     data_timeout = 5
-    answer_timeout = 5
+    answer_timeout = 3
     response = ''
+    connected = False
 
     def __init__(self, hostname, username, passwd):
         super(ASAClient, self).__init__()
@@ -32,6 +40,8 @@ class ASAClient(object):
         self.stdout = self.shell.makefile('rb')
         if not self._wait_answer('(\>|#)\s'):
             self.close()
+        else:
+            self.connected = True
 
     def _wait_data_from_shell(self):
         timeout = self.data_timeout * 10
@@ -98,6 +108,7 @@ class ASAClient(object):
         self.close()
 
     def close(self):
+        self.connected = False
         self.stdout.close()
         self.stdin.close()
         self.shell.close()
@@ -119,14 +130,22 @@ if __name__ == "__main__":
     parser.add_argument('-p', '--password')
     parser.add_argument('-s', '--script', default='script.asa')
     parser.add_argument('-w', '--write', action='store_true', help="Write config")
+    parser.add_argument('-C', '--check', action='store_true', help="Check connection")
     parser.add_argument('-v', '--verbose', action='store_true', help="Verbose output")
 
     args = parser.parse_args()
+
     if args.hostname and args.username and args.password:
+        if not args.check:
+            enable_output = True
         ssh = ASAClient(args.hostname, args.username, args.password)
-        ssh.enable_cmd()
-        ssh.no_pager()
-        ssh.exec_cmd(load_script(args.script))
+        if args.check:
+            if ssh.connected:
+                print("OK")
+        else:
+            ssh.enable_cmd()
+            ssh.no_pager()
+            ssh.exec_cmd(load_script(args.script))
         ssh.exit()
     else:
         parser.print_help()
