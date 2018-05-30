@@ -3,7 +3,9 @@
 #
 
 import paramiko
-import os, sys, time
+import os
+import sys
+import time
 import argparse
 import re
 
@@ -12,33 +14,43 @@ PROG_DESC = 'Cisco ASA shell client'
 
 enable_output = False
 
+
 def _out(str_text):
     if enable_output:
         sys.stdout.write(str_text)
         sys.stdout.flush()
 
+
 def _err(str_text):
     sys.stderr.write(str_text)
     sys.stderr.flush()
+
 
 class ASAClient(object):
 
     client = paramiko.SSHClient()
     data_timeout = 5
     answer_timeout = 3
-    response = ''
     connected = False
+    std_in = None
+    std_out = None
+    shell = None
 
-    def __init__(self, hostname, username, passwd):
+    def __init__(self, hostname, username, password):
         super(ASAClient, self).__init__()
         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        self.client.connect(hostname=hostname, username=username, password=passwd, look_for_keys=False, timeout=3)
-        self.password = passwd
-        self.shell = self.client.invoke_shell()
-        self.shell.settimeout(3)
-        self.stdin = self.shell.makefile('wb')
-        self.stdout = self.shell.makefile('rb')
-        if not self._wait_answer('(\>|#)\s'):
+        self.password = password
+        try:
+            self.client.connect(hostname=hostname, username=username, password=password,
+                                look_for_keys=False, timeout=self.data_timeout)
+            self.shell = self.client.invoke_shell()
+            self.shell.settimeout(3)
+        except Exception as e:
+            _err(str(e))
+            return
+        self.std_in = self.shell.makefile('wb')
+        self.std_out = self.shell.makefile('rb')
+        if not self._wait_answer('(\>|#)\s', first_run=True):
             self.close()
         else:
             self.connected = True
@@ -48,10 +60,9 @@ class ASAClient(object):
         while timeout and not self.shell.recv_ready():
             timeout -= 1
             time.sleep(.1)
-            # print('Data timeout:', timeout)
         if timeout:
             return True
-        print('Data timeout:', self.data_timeout, 'sec')
+        _err('Data timeout: %s sec' % self.data_timeout)
         return False
 
     def _is_answer(self, pattern):
@@ -63,65 +74,75 @@ class ASAClient(object):
                 return True
         return False
 
-    def _wait_answer(self, pattern):
-        timeout = self.answer_timeout * 10
-        self.response = ''
-        while timeout and not self._is_answer(pattern):
-            timeout -= 1
-            time.sleep(.1)
-        if timeout:
-            return True
-        print('Answer timeout:', self.answer_timeout, 'sec')
+    def _wait_answer(self, pattern, first_run=False):
+        if self.connected or first_run:
+            timeout = self.answer_timeout * 10
+            while timeout and not self._is_answer(pattern):
+                timeout -= 1
+                time.sleep(.1)
+            if timeout:
+                return True
+            _err('Answer timeout: %s sec' % self.answer_timeout)
         return False
 
+    def _write(self, buf, new_line=True):
+        if self.connected:
+            self.std_in.write(buf)
+            if new_line:
+                self.std_in.write("\n")
+
     def _read_shell(self):
-        self._wait_data_from_shell()
-        while self.shell.recv_ready():
-            _out(self.shell.recv(1024))
+        if self.connected:
+            self._wait_data_from_shell()
+            while self.shell.recv_ready():
+                _out(self.shell.recv(1024))
+
+    def _cmd(self, command, answer='#\s$'):
+        self._write(command)
+        if answer:
+            return self._wait_answer(answer)
+        else:
+            self._read_shell()
 
     def enable_cmd(self):
-        self.stdin.write("enable\n")
+        self._write("enable")
         if self._wait_answer('Password:\s$'):
-            self.stdin.write(self.password)
-            self.stdin.write("\n")
-            if self._wait_answer('#\s$'):
+            if self._cmd(self.password):
                 return True
         return False
 
-    def exec_cmd(self, script):
-        self.stdin.write(script)
-        self.stdin.write("\n")
-        if not self._wait_answer('#\s$'):
-            print "Script timeout"
+    def exec_script(self, script):
+        self._cmd(script)
 
     def no_pager(self):
-        self.stdin.write("terminal pager 0\n")
-        self._wait_answer('#\s$')
+        self._cmd("terminal pager 0")
 
     def write_config(self):
-        self.stdin.write("write config\n")
-        self._wait_answer('#\s$')
+        self._cmd("write memory")
 
     def exit(self):
-        self.stdin.write("exit\n")
-        self._read_shell()
+        self._cmd("exit", answer=None)
         self.close()
 
     def close(self):
         self.connected = False
-        self.stdout.close()
-        self.stdin.close()
-        self.shell.close()
-        self.client.close()
+        try:
+            self.std_out.close()
+            self.std_in.close()
+            self.shell.close()
+            self.client.close()
+        except None:
+            pass
 
 
 def load_script(script_file):
-    commands = "show clock\n"
+    commands = "show clock"
     if os.path.isfile(script_file):
         fd = open(script_file,'r')
         commands = fd.read()
         fd.close()
     return commands
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=PROG_DESC)
@@ -145,7 +166,7 @@ if __name__ == "__main__":
         else:
             ssh.enable_cmd()
             ssh.no_pager()
-            ssh.exec_cmd(load_script(args.script))
+            ssh.exec_script(load_script(args.script))
         ssh.exit()
     else:
         parser.print_help()
