@@ -8,7 +8,7 @@ import argparse
 import re
 
 PROG = os.path.basename(sys.argv[0]).rstrip('.py')
-PROG_DESC = 'Cisco ASA client'
+PROG_DESC = 'Cisco ASA shell client'
 
 def _out(str_text):
     sys.stdout.write(str_text)
